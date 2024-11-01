@@ -1,2 +1,2 @@
 mod broker;
-mod client;
+mod remote;
