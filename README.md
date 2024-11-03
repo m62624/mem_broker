@@ -1,3 +1,6 @@
+## This project was created solely for fulfilling a technical assignment and is not intended for any other use. Use at your own risk.
+
+
 ### Способ проверки через curl
 
 Запуск сервера
