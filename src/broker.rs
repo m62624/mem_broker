@@ -39,6 +39,7 @@ impl Broker {
         if self.topics.contains_key(&name) {
             Err("Топик уже существует".into())
         } else {
+            println!("Топик создан - {}", name);
             // Создаем новый топик и переводим в актор
             self.topics.insert(
                 name.clone(),
@@ -55,7 +56,9 @@ impl Broker {
         message: crate::message::Message,
     ) -> Result<(), String> {
         if let Some(topic) = self.topics.get(topic_name) {
+            println!("ID сообщения: {}", message.id);
             topic.do_send(PublishMessage(message));
+            println!("Сообщение отправлено");
             Ok(())
         } else {
             Err("Топик не найден".into())
@@ -83,6 +86,7 @@ impl Broker {
         // Если топик существует, отправляем сообщение, что клиент отписался
         if let Some(topic) = self.topics.get(topic_name) {
             topic.do_send(Unsubscribe { client_id });
+            println!("Клиент отписался");
             Ok(())
         } else {
             Err("Топик не найден".into())
@@ -102,6 +106,7 @@ impl Broker {
                 client_id,
                 message_id,
             });
+            println!("Сообщение получено");
             Ok(())
         } else {
             Err("Топик не найден".into())

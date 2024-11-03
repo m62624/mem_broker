@@ -24,23 +24,23 @@ curl -N http://localhost:8080/subscribe?topic=my_topic
 
 
 - topic: название топика.
-- key: опциональный ключ сообщения. Если не нужен, укажите null.
+- key: опциональный ключ сообщения. Если не нужно, укажите null.
 - payload: содержимое сообщения.
 - require_ack: требуется ли подтверждение доставки (true или false).
 
-```
-curl -X POST -H "Content-Type: application/json" \
--d '{
-    "topic": "my_topic",
-    "key": null,
-    "payload": ":D",
-    "require_ack": false
-}' \
-http://localhost:8080/publish
+```bash
+    curl -X POST -H "Content-Type: application/json" \
+    -d '{
+        "topic": "my_topic",
+        "key": null,
+        "payload": ":D",
+        "require_ack": false
+    }' \
+    http://localhost:8080/publish
 ```
 ещё несколько вариантов
 
-```
+```bash
 curl -X POST -H "Content-Type: application/json" \
 -d '{"topic":"my_topic", "key":":P", "payload":"Первое сообщение", "require_ack":false}' \
 http://localhost:8080/publish

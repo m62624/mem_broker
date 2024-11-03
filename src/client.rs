@@ -72,7 +72,9 @@ pub async fn subscribe(
     // _stream: web::Payload,
     path: web::Query<SubscribeRequest>,
 ) -> Result<HttpResponse, Error> {
+    // Создаем уникальный идентификатор клиента
     let client_id = Uuid::new_v4();
+
     let (tx, rx) = mpsc::unbounded();
 
     let ws = ClientSession { tx };
@@ -83,6 +85,9 @@ pub async fn subscribe(
         broker
             .subscribe(&path.topic, client_id.to_string(), addr.recipient())
             .map_err(error::ErrorBadRequest)?;
+
+        println!("Клиент подписался на топик {}", path.topic);
+        println!("ID клиента: {}", client_id);
     }
 
     let res = HttpResponse::Ok()
