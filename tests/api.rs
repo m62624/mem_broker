@@ -1,34 +1,20 @@
-use std::time::Duration;
+use mem_broker::{message::*, Actor, Consumer, MemBroker};
 
-use actix_web::{get, post, web, App, HttpServer, Responder, Result};
-use serde::Deserialize;
+#[actix::test]
+async fn test() {
+    let mut broker = MemBroker::new();
 
-#[derive(Deserialize)]
-struct Info {
-    user_id: String,
-    friend: String,
-}
+    let consumer1 = Consumer::new("consumer 1").start();
+    let consumer2 = Consumer::new("consumer 2").start();
 
-#[post("/create_topic")]
-async fn create_topic() -> impl Responder {
-    println!("create_topic");
-    "create_topic"
-}
+    let topic1 = broker.create_topic("topic 1").await;
 
-/// extract path info using serde
-#[get("/users/{user_id}/{friend}")] // <- define path parameters
-async fn index(info: web::Path<Info>) -> Result<String> {
-    Ok(format!(
-        "Welcome {}, user_id {}!",
-        info.friend, info.user_id
-    ))
-}
-
-#[actix_web::test]
-async fn test_t() -> std::io::Result<()> {
-    let _ = HttpServer::new(|| App::new().service(index).service(create_topic))
-        .bind("127.0.0.1:8080")?
-        .run()
+    topic1
+        .send(Subscribe::new("topic 1", consumer1.clone()))
         .await;
-    Ok(())
+    topic1
+        .send(Subscribe::new("topic 1", consumer2.clone()))
+        .await;
+
+    println!("consumers {:#?}, {:#?}", consumer1, consumer2)
 }

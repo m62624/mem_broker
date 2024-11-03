@@ -1,13 +1,15 @@
-use futures::channel::mpsc;
+use super::{
+    consumer::Consumer,
+    message::{Confirm, Message, Subscribe, Unsubscribe},
+};
+use actix::{clock::Instant, Actor, Addr, AsyncContext, Context, Handler};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     time::Duration,
 };
-use tokio::time::Instant;
 
-use super::message::Message;
-
+#[cfg_attr(any(feature = "debug", test), derive(Debug))]
 // Актор для топика
 pub struct Topic {
     // Название топика
@@ -17,16 +19,18 @@ pub struct Topic {
     // Метод хранения сообщения
     messages: Compaction,
     // Те кто подписаны на этот топик
-    consumers: HashMap<String, mpsc::UnboundedSender<Message>>,
+    consumers: HashMap<String, Addr<Consumer>>,
 }
 
+#[cfg_attr(any(feature = "debug", test), derive(Debug))]
 enum Compaction {
     // сохраняем только уникальные
     Enable(HashMap<String, MessageContainer>),
-    // если id повторяются то просто стакаем
+    // если id повторяются то сохраняем
     Disable(HashMap<String, VecDeque<MessageContainer>>),
 }
 
+#[cfg_attr(any(feature = "debug", test), derive(Debug))]
 #[derive(PartialEq, Eq)]
 struct MessageContainer {
     message: Message,
@@ -43,7 +47,9 @@ impl Topic {
         }
     }
 
+    // Рассылка сообщения всем подписчикам
     pub fn broadcast(&mut self, mut message: Message) {
+        // Добавляем временную метку, раз сообщение получено в топик
         message.timestamp_mut().replace(Instant::now());
         let send_message = message.clone();
 
@@ -78,49 +84,51 @@ impl Topic {
 
         // Отправляем сообщение всем подписчикам
         self.consumers.values().for_each(|tx| {
-            let _ = tx.unbounded_send(send_message.clone());
+            let _ = tx.try_send(send_message.clone());
         });
     }
 
+    // Подтверждение получения сообщения
     pub fn confirm_message(&mut self, client_id: &str, message_id: &str) -> bool {
-        let mut r = false;
+        let mut removed = false;
         match &mut self.messages {
             Compaction::Enable(map) => {
                 if let Some(message) = map.get_mut(message_id) {
                     if let Some(reply) = message.reply.as_mut() {
-                        reply.insert(client_id.into());
-                        if reply.len() == self.consumers.len() {
+                        // Если количество подтверждений равно количеству подписчиков, то удаляем сообщение
+                        if reply.insert(client_id.into()) && reply.len() == self.consumers.len() {
                             map.remove(message_id);
-                            r = true;
+                            removed = true;
                         }
                     }
                 }
             }
             Compaction::Disable(map) => {
                 if let Some(messages) = map.get_mut(message_id) {
-                    messages.iter_mut().for_each(|message| {
+                    for message in messages.iter_mut() {
                         if let Some(reply) = message.reply.as_mut() {
                             reply.insert(client_id.into());
                         }
-                    });
+                    }
                     messages.retain(|message| {
-                        if let Some(reply) = message.reply.as_ref() {
-                            if reply.len() == self.consumers.len() {
-                                r = true;
-                                false
-                            } else {
-                                true
-                            }
+                        if let Some(reply) = &message.reply {
+                            // Если количество подтверждений равно количеству подписчиков, то удаляем сообщение
+                            reply.len() == self.consumers.len()
                         } else {
                             true
                         }
                     });
+                    // Если коллекция сообщений пуста, то удаляем ключ
+                    if messages.is_empty() {
+                        map.remove(message_id);
+                    }
                 }
             }
         }
-        r
+        removed
     }
 
+    // Проверка времени хранения сообщений
     fn check_retantion(&mut self) {
         match &mut self.messages {
             Compaction::Enable(hash_map) => {
@@ -158,13 +166,56 @@ impl Topic {
     }
 
     // Подписываем клиента на топик
-    pub fn subscribe(&mut self, client_id: String, tx: mpsc::UnboundedSender<Message>) {
+    pub fn subscribe(&mut self, client_id: String, tx: Addr<Consumer>) {
         self.consumers.insert(client_id, tx);
     }
 
     // Отписываем клиента от топика
     pub fn unsubscribe(&mut self, client_id: &str) {
         self.consumers.remove(client_id);
+    }
+}
+
+impl Actor for Topic {
+    type Context = Context<Self>;
+}
+
+impl Handler<Message> for Topic {
+    type Result = ();
+
+    fn handle(&mut self, message: Message, ctx: &mut Context<Self>) -> Self::Result {
+        self.broadcast(message);
+        // Запускаем Interval для проверки времени хранения сообщений
+        ctx.run_interval(
+            self.retention.unwrap_or(Duration::from_secs(60)),
+            |act, _ctx| {
+                act.check_retantion();
+            },
+        );
+    }
+}
+
+impl Handler<Confirm> for Topic {
+    type Result = ();
+
+    fn handle(&mut self, msg: Confirm, _ctx: &mut Context<Self>) -> Self::Result {
+        self.confirm_message(&msg.client_id, &msg.message_id);
+    }
+}
+
+impl Handler<Subscribe> for Topic {
+    type Result = ();
+
+    fn handle(&mut self, msg: Subscribe, _ctx: &mut Context<Self>) -> Self::Result {
+        self.subscribe(msg.topic, msg.sender);
+    }
+}
+
+impl Handler<Unsubscribe> for Topic {
+    type Result = ();
+
+    fn handle(&mut self, msg: Unsubscribe, _ctx: &mut Context<Self>) -> Self::Result {
+        self.unsubscribe(&msg.0);
     }
 }
 
