@@ -1,24 +1,21 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::broker::Broker;
-use crate::message::Message;
-use crate::topic::DeliverMessage;
+use crate::{
+    broker::{Broker, CreateTopicRequest},
+    message::Message,
+    topic::DeliverMessage,
+};
 use actix::prelude::*;
 use actix_web::{error, web, Error, HttpResponse};
-use futures::channel::mpsc;
-use futures::lock::Mutex;
-use futures::StreamExt;
+use futures::{channel::mpsc, lock::Mutex, StreamExt};
 use serde::Deserialize;
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
-#[derive(Deserialize)]
-pub struct CreateTopicRequest {
-    pub name: String,
-    pub retention: Option<u64>, // Будут секундами
-    pub compaction: bool,
+// Структура для хранения сессии клиента, хранит отправителя сообщений
+struct ClientSession {
+    tx: mpsc::UnboundedSender<Message>,
 }
 
+// Структура для публикации сообщения
 #[derive(Deserialize)]
 pub struct PublishRequest {
     topic: String,
@@ -27,11 +24,13 @@ pub struct PublishRequest {
     require_ack: bool,
 }
 
+// Структура для подписки на топик
 #[derive(Deserialize)]
 pub struct SubscribeRequest {
     topic: String,
 }
 
+// Структура для подтверждения получения сообщения
 #[derive(Deserialize)]
 pub struct AcknowledgeRequest {
     topic: String,
@@ -39,6 +38,7 @@ pub struct AcknowledgeRequest {
     message_id: String,
 }
 
+// Функция для публикации сообщения
 pub async fn publish(
     broker: web::Data<Arc<Mutex<Broker>>>,
     req: web::Json<PublishRequest>,
@@ -51,6 +51,7 @@ pub async fn publish(
     Ok(HttpResponse::Ok().finish())
 }
 
+// Функция для подтверждения получения сообщения
 pub async fn acknowledge(
     broker: web::Data<Arc<Mutex<Broker>>>,
     req: web::Json<AcknowledgeRequest>,
@@ -64,6 +65,7 @@ pub async fn acknowledge(
     Ok(HttpResponse::Ok().finish())
 }
 
+// Функция для подписки на топик
 pub async fn subscribe(
     broker: web::Data<Arc<Mutex<Broker>>>,
     // _req: HttpRequest,
@@ -90,6 +92,7 @@ pub async fn subscribe(
     Ok(res)
 }
 
+// Функция для создания топика
 pub async fn create_topic_handler(
     broker: web::Data<Arc<Mutex<Broker>>>,
     req: web::Json<CreateTopicRequest>,
@@ -105,8 +108,12 @@ pub async fn create_topic_handler(
     Ok(HttpResponse::Ok().finish())
 }
 
-struct ClientSession {
-    tx: mpsc::UnboundedSender<Message>,
+// Изменяем настройки маршрутов
+pub fn init_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/publish").route(web::post().to(publish)))
+        .service(web::resource("/subscribe").route(web::get().to(subscribe)))
+        .service(web::resource("/ack").route(web::post().to(acknowledge)))
+        .service(web::resource("/create_topic").route(web::post().to(create_topic_handler)));
 }
 
 impl Actor for ClientSession {
@@ -119,11 +126,4 @@ impl Handler<DeliverMessage> for ClientSession {
     fn handle(&mut self, msg: DeliverMessage, _ctx: &mut Context<Self>) -> Self::Result {
         let _ = self.tx.unbounded_send(msg.0);
     }
-}
-
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(web::resource("/publish").route(web::post().to(publish)))
-        .service(web::resource("/subscribe").route(web::get().to(subscribe)))
-        .service(web::resource("/ack").route(web::post().to(acknowledge)))
-        .service(web::resource("/create_topic").route(web::post().to(create_topic_handler)));
 }

@@ -8,13 +8,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+// Хранение топиков (каждый топик будет актором)
 pub struct Broker {
     topics: HashMap<String, Addr<Topic>>,
 }
 
+// Структура для создания топика
 #[derive(Deserialize)]
 pub struct CreateTopicRequest {
     pub name: String,
+    // Время после которого сообщения удаляются
     pub retention: Option<u64>, // Время в секундах
     pub compaction: bool,
 }
@@ -26,6 +29,7 @@ impl Broker {
         }
     }
 
+    // Создание нового топика
     pub fn create_topic(
         &mut self,
         name: String,
@@ -35,12 +39,16 @@ impl Broker {
         if self.topics.contains_key(&name) {
             Err("Топик уже существует".into())
         } else {
-            let topic = Topic::new(name.clone(), retention, compaction).start();
-            self.topics.insert(name, topic);
+            // Создаем новый топик и переводим в актор
+            self.topics.insert(
+                name.clone(),
+                Topic::new(name, retention, compaction).start(),
+            );
             Ok(())
         }
     }
 
+    // Отправка сообщения в топик
     pub fn publish_message(
         &self,
         topic_name: &str,
@@ -58,8 +66,10 @@ impl Broker {
         &self,
         topic_name: &str,
         client_id: String,
+        // Recipient - это адресат сообщения
         addr: Recipient<crate::topic::DeliverMessage>,
     ) -> Result<(), String> {
+        // Если топик существует, отправляем сообщение, что клиент подписался
         if let Some(topic) = self.topics.get(topic_name) {
             topic.do_send(Subscribe { client_id, addr });
             Ok(())
@@ -68,7 +78,9 @@ impl Broker {
         }
     }
 
+    // Отписка от топика
     pub fn unsubscribe(&self, topic_name: &str, client_id: String) -> Result<(), String> {
+        // Если топик существует, отправляем сообщение, что клиент отписался
         if let Some(topic) = self.topics.get(topic_name) {
             topic.do_send(Unsubscribe { client_id });
             Ok(())
@@ -77,12 +89,14 @@ impl Broker {
         }
     }
 
+    // Подтверждение получения сообщения
     pub fn acknowledge(
         &self,
         topic_name: &str,
         client_id: String,
         message_id: String,
     ) -> Result<(), String> {
+        // Если топик существует, отправляем сообщение, что сообщение получено
         if let Some(topic) = self.topics.get(topic_name) {
             topic.do_send(Acknowledge {
                 client_id,
@@ -95,6 +109,7 @@ impl Broker {
     }
 }
 
+// Обработчик создания топика
 pub async fn create_topic_handler(
     broker: web::Data<Arc<Mutex<Broker>>>,
     req: web::Json<CreateTopicRequest>,
