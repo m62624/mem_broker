@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 // Структура топика
 pub struct Topic {
     // Название топика
-    name: String,
+    // name: String,
     // Время хранения сообщений
     retention: Option<Duration>,
     // Флаг компакции, если true, то мы используем last_message_by_key
@@ -57,9 +57,9 @@ pub struct Acknowledge {
 pub struct DeliverMessage(pub Message);
 
 impl Topic {
-    pub fn new(name: String, retention: Option<Duration>, compaction: bool) -> Self {
+    pub fn new(retention: Option<Duration>, compaction: bool) -> Self {
         Topic {
-            name,
+            // name,
             retention,
             compaction,
             messages: VecDeque::new(),

@@ -41,10 +41,8 @@ impl Broker {
         } else {
             println!("Топик создан - {}", name);
             // Создаем новый топик и переводим в актор
-            self.topics.insert(
-                name.clone(),
-                Topic::new(name, retention, compaction).start(),
-            );
+            self.topics
+                .insert(name.clone(), Topic::new(retention, compaction).start());
             Ok(())
         }
     }
