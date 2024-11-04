@@ -23,6 +23,16 @@ http://localhost:8080/create_topic
 curl -N http://localhost:8080/subscribe?topic=my_topic
 ```
 
+обратное действие
+
+```bash
+curl -X POST \
+     -H "Content-Type: application/json" \
+     -H "X-Client-Id: ваш_client_id" \
+     -d '{"topic": "my_topic"}' \
+     http://localhost:8080/unsubscribe
+```
+
 создаем собщение 
 
 

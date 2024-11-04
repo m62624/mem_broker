@@ -4,7 +4,7 @@ use crate::{
     topic::DeliverMessage,
 };
 use actix::prelude::*;
-use actix_web::{error, web, Error, HttpResponse};
+use actix_web::{error, web, Error, HttpRequest, HttpResponse};
 use futures::{channel::mpsc, lock::Mutex, StreamExt};
 use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
@@ -28,6 +28,11 @@ pub struct PublishRequest {
 #[derive(Deserialize)]
 pub struct SubscribeRequest {
     topic: String,
+}
+
+#[derive(Deserialize)]
+pub struct UnsubscribeRequest {
+    pub topic: String,
 }
 
 // Структура для подтверждения получения сообщения
@@ -97,6 +102,30 @@ pub async fn subscribe(
     Ok(res)
 }
 
+pub async fn unsubscribe(
+    broker: web::Data<Arc<Mutex<Broker>>>,
+    req: web::Json<UnsubscribeRequest>,
+    req_http: HttpRequest,
+) -> Result<HttpResponse, Error> {
+    // Извлекаем client_id из заголовков
+    let client_id = req_http
+        .headers()
+        .get("X-Client-Id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| error::ErrorBadRequest("Отсутствует заголовок X-Client-Id"))?
+        .to_string();
+
+    // Обрабатываем отписку
+    {
+        let broker = broker.lock().await;
+        broker
+            .unsubscribe(&req.topic, client_id)
+            .map_err(error::ErrorBadRequest)?;
+    }
+
+    Ok(HttpResponse::Ok().finish())
+}
+
 // Функция для создания топика
 pub async fn create_topic_handler(
     broker: web::Data<Arc<Mutex<Broker>>>,
@@ -117,6 +146,7 @@ pub async fn create_topic_handler(
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(web::resource("/publish").route(web::post().to(publish)))
         .service(web::resource("/subscribe").route(web::get().to(subscribe)))
+        .service(web::resource("/unsubscribe").route(web::post().to(unsubscribe)))
         .service(web::resource("/ack").route(web::post().to(acknowledge)))
         .service(web::resource("/create_topic").route(web::post().to(create_topic_handler)));
 }
