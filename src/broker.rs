@@ -1,129 +1,82 @@
-use crate::topic::{Acknowledge, PublishMessage, Subscribe, Topic, Unsubscribe};
-use actix::prelude::*;
-use actix_web::Error;
-use actix_web::{error, web, HttpResponse};
-use futures::lock::Mutex;
-use serde::Deserialize;
+use super::client;
+
+use actix::{Addr, Handler};
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
 
-// Хранение топиков (каждый топик будет актором)
+#[cfg(not(feature = "remote"))]
+use actix::Actor;
+#[cfg(not(feature = "remote"))]
+use actix::Context;
+#[cfg(not(feature = "remote"))]
+use actix::ResponseFuture;
+
+use super::*;
+use crate::topic::Topic;
+
 pub struct Broker {
-    topics: HashMap<String, Addr<Topic>>,
+    // id-client
+    topics: HashMap<Id, HashMap<String, Addr<Topic>>>,
 }
 
-// Структура для создания топика
-#[derive(Deserialize)]
-pub struct CreateTopicRequest {
-    pub name: String,
-    // Время после которого сообщения удаляются
-    pub retention: Option<u64>, // Время в секундах
-    pub compaction: bool,
-}
+#[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+#[cfg_attr(any(feature = "debug", test), derive(Debug))]
+pub struct Id(pub String);
 
 impl Broker {
-    pub fn new() -> Broker {
-        Broker {
+    pub fn new() -> Self {
+        Self {
             topics: HashMap::new(),
         }
     }
+}
 
-    // Создание нового топика
-    pub fn create_topic(
-        &mut self,
-        name: String,
-        retention: Option<Duration>,
-        compaction: bool,
-    ) -> Result<(), String> {
-        if self.topics.contains_key(&name) {
-            Err("Топик уже существует".into())
-        } else {
-            println!("Топик создан - {}", name);
-            // Создаем новый топик и переводим в актор
-            self.topics
-                .insert(name.clone(), Topic::new(retention, compaction).start());
-            Ok(())
-        }
+#[cfg(not(feature = "remote"))]
+impl Actor for Broker {
+    type Context = Context<Self>;
+}
+
+#[cfg(not(feature = "remote"))]
+impl Handler<client::message::CreateTopic> for Broker {
+    type Result = ();
+
+    fn handle(&mut self, msg: client::message::CreateTopic, _ctx: &mut Self::Context) {
+        self.topics
+            .entry(msg.0)
+            .or_insert_with(HashMap::new)
+            .insert(msg.1.name().into(), msg.1.start());
     }
+}
 
-    // Отправка сообщения в топик
-    pub fn publish_message(
-        &self,
-        topic_name: &str,
-        message: crate::message::Message,
-    ) -> Result<(), String> {
-        if let Some(topic) = self.topics.get(topic_name) {
-            println!("ID сообщения: {}", message.id);
-            topic.do_send(PublishMessage(message));
-            println!("Сообщение отправлено");
-            Ok(())
-        } else {
-            Err("Топик не найден".into())
-        }
-    }
+#[cfg(not(feature = "remote"))]
+impl Handler<client::message::DeleteTopic> for Broker {
+    type Result = ();
 
-    pub fn subscribe(
-        &self,
-        topic_name: &str,
-        client_id: String,
-        // Recipient - это адресат сообщения
-        addr: Recipient<crate::topic::DeliverMessage>,
-    ) -> Result<(), String> {
-        // Если топик существует, отправляем сообщение, что клиент подписался
-        if let Some(topic) = self.topics.get(topic_name) {
-            topic.do_send(Subscribe { client_id, addr });
-            Ok(())
-        } else {
-            Err("Топик не найден".into())
-        }
-    }
-
-    // Отписка от топика
-    pub fn unsubscribe(&self, topic_name: &str, client_id: String) -> Result<(), String> {
-        // Если топик существует, отправляем сообщение, что клиент отписался
-        if let Some(topic) = self.topics.get(topic_name) {
-            topic.do_send(Unsubscribe { client_id });
-            println!("Клиент отписался");
-            Ok(())
-        } else {
-            Err("Топик не найден".into())
-        }
-    }
-
-    // Подтверждение получения сообщения
-    pub fn acknowledge(
-        &self,
-        topic_name: &str,
-        client_id: String,
-        message_id: String,
-    ) -> Result<(), String> {
-        // Если топик существует, отправляем сообщение, что сообщение получено
-        if let Some(topic) = self.topics.get(topic_name) {
-            topic.do_send(Acknowledge {
-                client_id,
-                message_id,
-            });
-            println!("Сообщение получено");
-            Ok(())
-        } else {
-            Err("Топик не найден".into())
+    fn handle(&mut self, msg: client::message::DeleteTopic, _ctx: &mut Self::Context) {
+        if let Some(t_n) = self.topics.get_mut(&msg.0) {
+            if let Some(topic) = t_n.remove(&msg.1) {
+                topic.do_send(topic::message::Stop);
+            }
         }
     }
 }
 
-// Обработчик создания топика
-pub async fn create_topic_handler(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    req: web::Json<CreateTopicRequest>,
-) -> Result<HttpResponse, Error> {
-    let mut broker = broker.lock().await;
-    broker
-        .create_topic(
-            req.name.clone(),
-            req.retention.map(Duration::from_secs),
-            req.compaction,
-        )
-        .map_err(error::ErrorBadRequest)?;
-    Ok(HttpResponse::Ok().finish())
+#[cfg(not(feature = "remote"))]
+impl Handler<client::message::GetListOfTopics> for Broker {
+    type Result = Vec<String>;
+
+    fn handle(
+        &mut self,
+        msg: client::message::GetListOfTopics,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let mut topics = Vec::new();
+
+        if let Some(t_n) = self.topics.get(&msg.0) {
+            let t_n = t_n.clone();
+            for (name, _) in t_n {
+                topics.push(name.clone());
+            }
+        }
+        topics
+    }
 }

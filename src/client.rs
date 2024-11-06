@@ -1,164 +1,159 @@
-use crate::{
-    broker::{Broker, CreateTopicRequest},
-    message::Message,
-    topic::DeliverMessage,
-};
-use actix::prelude::*;
-use actix_web::{error, web, Error, HttpRequest, HttpResponse};
-use futures::{channel::mpsc, lock::Mutex, StreamExt};
-use serde::Deserialize;
-use std::{sync::Arc, time::Duration};
-use uuid::Uuid;
+#[cfg(not(feature = "remote"))]
+use crate::broker::Broker;
+use crate::topic::Topic;
+#[cfg(not(feature = "remote"))]
+use actix::Recipient;
 
-// Структура для хранения сессии клиента, хранит отправителя сообщений
-struct ClientSession {
-    tx: mpsc::UnboundedSender<Message>,
+#[cfg(not(feature = "remote"))]
+use actix::Addr;
+
+use actix::{Actor, Context, Handler};
+
+#[cfg(feature = "remote")]
+use futures::channel::mpsc;
+
+use super::message::Message;
+use crate::broker::Id;
+
+use std::collections::VecDeque;
+
+#[cfg_attr(any(feature = "debug", test), derive(Debug))]
+pub struct Client {
+    id: Id,
+    messages: VecDeque<Message>,
+
+    // Broker
+    #[cfg(not(feature = "remote"))]
+    connection: Addr<Broker>,
+
+    #[cfg(feature = "remote")]
+    connection: (
+        mpsc::UnboundedSender<Message>,
+        Option<mpsc::UnboundedReceiver<Message>>,
+    ),
 }
 
-// Структура для публикации сообщения
-#[derive(Deserialize)]
-pub struct PublishRequest {
-    topic: String,
-    key: Option<String>,
-    payload: String,
-    require_ack: bool,
-}
-
-// Структура для подписки на топик
-#[derive(Deserialize)]
-pub struct SubscribeRequest {
-    topic: String,
-}
-
-#[derive(Deserialize)]
-pub struct UnsubscribeRequest {
-    pub topic: String,
-}
-
-// Структура для подтверждения получения сообщения
-#[derive(Deserialize)]
-pub struct AcknowledgeRequest {
-    topic: String,
-    client_id: String,
-    message_id: String,
-}
-
-// Функция для публикации сообщения
-pub async fn publish(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    req: web::Json<PublishRequest>,
-) -> Result<HttpResponse, Error> {
-    let broker = broker.lock().await;
-    let message = Message::new(req.payload.clone(), req.key.clone(), req.require_ack);
-    broker
-        .publish_message(&req.topic, message)
-        .map_err(error::ErrorBadRequest)?;
-    Ok(HttpResponse::Ok().finish())
-}
-
-// Функция для подтверждения получения сообщения
-pub async fn acknowledge(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    req: web::Json<AcknowledgeRequest>,
-) -> Result<HttpResponse, Error> {
-    broker
-        .lock()
-        .await
-        .acknowledge(&req.topic, req.client_id.clone(), req.message_id.clone())
-        .map_err(error::ErrorBadRequest)?;
-
-    Ok(HttpResponse::Ok().finish())
-}
-
-// Функция для подписки на топик
-pub async fn subscribe(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    // _req: HttpRequest,
-    // _stream: web::Payload,
-    path: web::Query<SubscribeRequest>,
-) -> Result<HttpResponse, Error> {
-    // Создаем уникальный идентификатор клиента
-    let client_id = Uuid::new_v4();
-
-    let (tx, rx) = mpsc::unbounded();
-
-    let ws = ClientSession { tx };
-    let addr = ws.start();
-
-    {
-        let broker = broker.lock().await;
-        broker
-            .subscribe(&path.topic, client_id.to_string(), addr.recipient())
-            .map_err(error::ErrorBadRequest)?;
-
-        println!("Клиент подписался на топик {}", path.topic);
-        println!("ID клиента: {}", client_id);
+impl Client {
+    pub fn new(#[cfg(not(feature = "remote"))] broker: Addr<Broker>) -> Self {
+        Self {
+            id: Id(uuid::Uuid::new_v4().into()),
+            messages: VecDeque::new(),
+            #[cfg(feature = "remote")]
+            connection: {
+                let (tx, rx) = mpsc::unbounded();
+                (tx, Some(rx))
+            },
+            #[cfg(not(feature = "remote"))]
+            connection: broker,
+        }
     }
-
-    let res = HttpResponse::Ok()
-        .insert_header(("content-type", "text/event-stream"))
-        .streaming(rx.map(|msg| Ok::<_, Error>(web::Bytes::from(msg.payload))));
-
-    Ok(res)
 }
 
-pub async fn unsubscribe(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    req: web::Json<UnsubscribeRequest>,
-    req_http: HttpRequest,
-) -> Result<HttpResponse, Error> {
-    // Извлекаем client_id из заголовков
-    let client_id = req_http
-        .headers()
-        .get("X-Client-Id")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| error::ErrorBadRequest("Отсутствует заголовок X-Client-Id"))?
-        .to_string();
-
-    // Обрабатываем отписку
-    {
-        let broker = broker.lock().await;
-        broker
-            .unsubscribe(&req.topic, client_id)
-            .map_err(error::ErrorBadRequest)?;
-    }
-
-    Ok(HttpResponse::Ok().finish())
-}
-
-// Функция для создания топика
-pub async fn create_topic_handler(
-    broker: web::Data<Arc<Mutex<Broker>>>,
-    req: web::Json<CreateTopicRequest>,
-) -> Result<HttpResponse, Error> {
-    let mut broker = broker.lock().await;
-    broker
-        .create_topic(
-            req.name.clone(),
-            req.retention.map(Duration::from_secs),
-            req.compaction,
-        )
-        .map_err(error::ErrorBadRequest)?;
-    Ok(HttpResponse::Ok().finish())
-}
-
-// Изменяем настройки маршрутов
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(web::resource("/publish").route(web::post().to(publish)))
-        .service(web::resource("/subscribe").route(web::get().to(subscribe)))
-        .service(web::resource("/unsubscribe").route(web::post().to(unsubscribe)))
-        .service(web::resource("/ack").route(web::post().to(acknowledge)))
-        .service(web::resource("/create_topic").route(web::post().to(create_topic_handler)));
-}
-
-impl Actor for ClientSession {
+impl Actor for Client {
     type Context = Context<Self>;
 }
 
-impl Handler<DeliverMessage> for ClientSession {
+impl Handler<Message> for Client {
     type Result = ();
 
-    fn handle(&mut self, msg: DeliverMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        let _ = self.tx.unbounded_send(msg.0);
+    fn handle(&mut self, msg: Message, _ctx: &mut Self::Context) {
+        self.messages.push_back(msg);
+    }
+}
+
+pub mod message {
+    use actix::ResponseFuture;
+
+    use crate::{broker::Id, topic::Topic};
+
+    pub struct NewTopic(pub Topic);
+
+    pub struct CreateTopic(pub Id, pub Topic);
+
+    // client id
+    pub struct DeleteTopic(pub Id, pub String);
+
+    pub struct GetTopics;
+
+    // client id
+    pub struct GetListOfTopics(pub Id);
+
+    impl actix::Message for NewTopic {
+        type Result = ();
+    }
+
+    #[cfg(not(feature = "remote"))]
+    impl actix::Handler<NewTopic> for super::Client {
+        type Result = ();
+
+        fn handle(&mut self, msg: NewTopic, _ctx: &mut Self::Context) -> Self::Result {
+            self.connection.do_send(CreateTopic(self.id.clone(), msg.0));
+        }
+    }
+
+    impl actix::Message for CreateTopic {
+        type Result = ();
+    }
+
+    #[cfg(not(feature = "remote"))]
+    impl actix::Handler<CreateTopic> for super::Client {
+        type Result = ();
+
+        fn handle(&mut self, msg: CreateTopic, _ctx: &mut Self::Context) -> Self::Result {
+            self.connection.do_send(msg);
+        }
+    }
+
+    impl actix::Message for DeleteTopic {
+        type Result = ();
+    }
+
+    #[cfg(not(feature = "remote"))]
+    impl actix::Handler<DeleteTopic> for super::Client {
+        type Result = ();
+
+        fn handle(&mut self, msg: DeleteTopic, _ctx: &mut Self::Context) -> Self::Result {
+            self.connection.do_send(msg);
+        }
+    }
+
+    impl actix::Message for GetTopics {
+        type Result = Vec<String>;
+    }
+
+    #[cfg(not(feature = "remote"))]
+    impl actix::Handler<GetTopics> for super::Client {
+        type Result = ResponseFuture<Vec<String>>;
+
+        fn handle(&mut self, _msg: GetTopics, _ctx: &mut Self::Context) -> Self::Result {
+            let connection = self.connection.clone();
+            let id = self.id.clone();
+            Box::pin(async move {
+                connection
+                    .send(GetListOfTopics(id))
+                    .await
+                    .unwrap_or_else(|_| Vec::new())
+            })
+        }
+    }
+
+    impl actix::Message for GetListOfTopics {
+        type Result = Vec<String>;
+    }
+
+    #[cfg(not(feature = "remote"))]
+    impl actix::Handler<GetListOfTopics> for super::Client {
+        type Result = ResponseFuture<Vec<String>>;
+
+        fn handle(&mut self, _msg: GetListOfTopics, _ctx: &mut Self::Context) -> Self::Result {
+            let connection = self.connection.clone();
+            let id = self.id.clone();
+            Box::pin(async move {
+                connection
+                    .send(GetListOfTopics(id))
+                    .await
+                    .unwrap_or_else(|_| Vec::new())
+            })
+        }
     }
 }
